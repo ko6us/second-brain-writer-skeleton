@@ -1,0 +1,95 @@
+name: Create Article Folder
+
+on:
+  workflow_dispatch:
+    inputs:
+      folder_name:
+        description: "Article folder name under articles/"
+        required: true
+        default: "yyyymmdd-new-article"
+      title:
+        description: "Article title"
+        required: true
+        default: "new article"
+      markdown_file_name:
+        description: "Markdown filename"
+        required: true
+        default: "decision-table.md"
+
+permissions:
+  contents: write
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Create article files
+        run: |
+          FOLDER_NAME="${{ github.event.inputs.folder_name }}"
+          FOLDER="articles/$FOLDER_NAME"
+          TITLE="${{ github.event.inputs.title }}"
+          MD_FILE="${{ github.event.inputs.markdown_file_name }}"
+
+          # Body file (Matches folder name)
+          ARTICLE_FILE="$FOLDER/$FOLDER_NAME.md"
+
+          # Table file (for Gist)
+          TABLE_FILE="$FOLDER/$MD_FILE"
+          GIST_FILE_NAME="${FOLDER_NAME}__${MD_FILE}"
+
+          mkdir -p "$FOLDER"
+
+          # Create Article Body (Obsidian Target)
+          if [ ! -f "$ARTICLE_FILE" ]; then
+            cat > "$ARTICLE_FILE" <<EOF
+---
+title: "$TITLE"
+note_url: ""
+---
+
+# $TITLE
+
+本文をここに記述してください。
+
+## テーブル埋め込み
+![[$MD_FILE]]
+EOF
+          fi
+
+          # Create Table File
+          if [ ! -f "$TABLE_FILE" ]; then
+            printf '%s\n' \
+              '| 項目 | 内容 |' \
+              '|------|------|' \
+              '| サンプル | データ |' \
+              > "$TABLE_FILE"
+          fi
+
+          # Create meta.json with items array
+          cat > "$FOLDER/meta.json" <<EOF
+      {
+      "article_title": "$TITLE",
+      "article_folder": "$FOLDER",
+      "note_url": "",
+      "items": [
+      {
+      "source_file": "$TABLE_FILE",
+      "gist_filename": "$GIST_FILE_NAME",
+      "gist_description": "note embed for $TITLE [$FOLDER_NAME]",
+      "gist_id": "",
+      "gist_url": ""
+      }
+      ]
+      }
+      EOF
+          
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --cached --quiet || git commit -m "Create article ${{ github.event.inputs.folder_name }}"
+          git push

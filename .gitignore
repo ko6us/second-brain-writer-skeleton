@@ -1,0 +1,34 @@
+# --- OS & IDE ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.gemini/settings.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+.env
+
+# --- Obsidian ---
+# 共有すべき設定（plugins, templates）は除外し、個別の状態を保持するファイルを除外
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/graph.json
+.obsidian/appearance.json
+.obsidian/plugins/*/data.json
+
+# --- Project Specific ---
+# noteのインポート用XMLや元データ
+import/
+# attachmentsの元ファイル（必要に応じて）
+# attachments/
+
+# --- Scripts & Logs ---
+*.log
+scripts/tmp_*
+scripts/config.json

@@ -1,0 +1,152 @@
+name: Sync Gists from Meta Files
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Sync mode: pending or all"
+        required: true
+        default: "pending"
+      meta_glob:
+        description: "Glob for meta.json discovery"
+        required: true
+        default: "articles/**/meta.json"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate mode
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ "$MODE" != "pending" ] && [ "$MODE" != "all" ]; then
+            echo "Invalid mode: $MODE"
+            exit 1
+          fi
+
+      - name: Sync gists from all meta.json files
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          MODE: ${{ github.event.inputs.mode }}
+          META_GLOB: ${{ github.event.inputs.meta_glob }}
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+
+          files=( $META_GLOB )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No meta.json files matched: $META_GLOB"
+            exit 0
+          fi
+
+          updated_any=0
+
+          for meta_file in "${files[@]}"; do
+            echo "Processing: $meta_file"
+
+            if ! jq empty "$meta_file" >/dev/null 2>&1; then
+              echo "Invalid JSON: $meta_file"
+              exit 1
+            fi
+
+            item_count=$(jq '.items | length' "$meta_file")
+            if [ "$item_count" -eq 0 ]; then
+              echo "No items in $meta_file"
+              continue
+            fi
+
+            tmp_meta=$(mktemp)
+            cp "$meta_file" "$tmp_meta"
+            meta_changed=0
+
+            for ((i=0; i<item_count; i++)); do
+              source_file=$(jq -r ".items[$i].source_file" "$tmp_meta")
+              gist_filename=$(jq -r ".items[$i].gist_filename" "$tmp_meta")
+              gist_description=$(jq -r ".items[$i].gist_description" "$tmp_meta")
+              gist_id=$(jq -r ".items[$i].gist_id // \"\"" "$tmp_meta")
+              gist_url=$(jq -r ".items[$i].gist_url // \"\"" "$tmp_meta")
+
+              if [ ! -f "$source_file" ]; then
+                echo "Source file not found: $source_file"
+                exit 1
+              fi
+
+              should_process=0
+              if [ "$MODE" = "all" ]; then
+                should_process=1
+              elif [ -z "$gist_id" ] || [ "$gist_id" = "null" ] || [ -z "$gist_url" ] || [ "$gist_url" = "null" ]; then
+                should_process=1
+              fi
+
+              if [ "$should_process" -ne 1 ]; then
+                echo "Skip existing: $source_file"
+                continue
+              fi
+
+              content_json=$(jq -Rs . < "$source_file")
+
+              if [ -z "$gist_id" ] || [ "$gist_id" = "null" ]; then
+                echo "Create gist for: $source_file"
+                response=$(curl -s -L \
+                  -X POST \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer $GIST_TOKEN" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  https://api.github.com/gists \
+                  -d "{\"description\":\"$gist_description\",\"public\":true,\"files\":{\"$gist_filename\":{\"content\":$content_json}}}")
+              else
+                echo "Update gist for: $source_file"
+                response=$(curl -s -L \
+                  -X PATCH \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer $GIST_TOKEN" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  https://api.github.com/gists/$gist_id \
+                  -d "{\"description\":\"$gist_description\",\"files\":{\"$gist_filename\":{\"content\":$content_json}}}")
+              fi
+
+              new_gist_id=$(echo "$response" | jq -r '.id // ""')
+              new_gist_url=$(echo "$response" | jq -r '.html_url // ""')
+              api_message=$(echo "$response" | jq -r '.message // ""')
+
+              if [ -z "$new_gist_id" ] || [ -z "$new_gist_url" ]; then
+                echo "Failed for $source_file"
+                echo "API message: $api_message"
+                echo "$response"
+                exit 1
+              fi
+
+              jq \
+                --arg gist_id "$new_gist_id" \
+                --arg gist_url "$new_gist_url" \
+                ".items[$i].gist_id = \$gist_id | .items[$i].gist_url = \$gist_url" \
+                "$tmp_meta" > "$tmp_meta.next"
+              mv "$tmp_meta.next" "$tmp_meta"
+              meta_changed=1
+              updated_any=1
+
+              echo "Synced: $source_file -> $new_gist_url"
+            done
+
+            if [ "$meta_changed" -eq 1 ]; then
+              mv "$tmp_meta" "$meta_file"
+              echo "Updated meta: $meta_file"
+            else
+              rm -f "$tmp_meta"
+            fi
+          done
+
+      - name: Commit and push updated meta files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add articles/**/meta.json
+          git diff --cached --quiet || git commit -m "Sync gist metadata"
+          git push
